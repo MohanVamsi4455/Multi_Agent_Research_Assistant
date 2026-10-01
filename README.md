@@ -90,7 +90,7 @@ python -m venv multi_agent_venv
 multi_agent_venv\Scripts\activate        # Windows
 # source multi_agent_venv/bin/activate   # macOS / Linux
 
-pip install -r requirement.txt
+pip install -r requirements.txt
 ```
 
 Create a `.env` file in the project root:
@@ -152,7 +152,7 @@ Knowing where that loss happens is most of what separates a pipeline that works 
 ```
 ├── app.py                      # Streamlit UI — styles, flow graph, tabs, error copy
 ├── main.py                     # CLI entry point (UTF-8 safe console)
-├── requirement.txt
+├── requirements.txt
 ├── .streamlit/config.toml      # Theme
 └── src/
     ├── agents/agents.py        # LLMs, system prompts, 2 agents, 2 LCEL chains

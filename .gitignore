@@ -1,2 +1,7 @@
 .env
 /multi_agent_venv
+models.txt
+pre_project_cmds.txt
+
+__pycache__/
+*.pyc

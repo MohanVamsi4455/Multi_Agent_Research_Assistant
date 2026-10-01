@@ -1,7 +1,10 @@
 import requests
 import os
+import time
 from dotenv import load_dotenv
 from langchain.tools import tool
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from tavily import TavilyClient
 from rich import print
 from bs4 import BeautifulSoup
@@ -16,16 +19,73 @@ tavily_api_key=os.getenv("TAVILY_API_KEY")
 
 tavily_client = TavilyClient(api_key=tavily_api_key)
 
+
+# Dropped connections are routine against both the search API and arbitrary
+# websites. RemoteDisconnected surfaces as a plain requests.ConnectionError —
+# Tavily's own error classes do not cover it — so handle it here.
+TRANSIENT_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+
+def _with_retry(call, attempts: int = 3, base_delay: float = 1.0):
+    """Run `call`, retrying transient network failures with exponential backoff."""
+    last = None
+    for attempt in range(attempts):
+        try:
+            return call()
+        except TRANSIENT_ERRORS as exc:
+            last = exc
+            if attempt < attempts - 1:
+                time.sleep(base_delay * (2 ** attempt))
+    raise last
+
+
+def _session() -> requests.Session:
+    """A session that retries dropped connections and throttling responses."""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=0.8,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 @tool
 def web_search(query:str)->str :
     """ Searches the web for the given query and returns the results. """
     out=[]
-    
-    results=tavily_client.search(query=query, num_results=3)
-    
-    for r in results['results']:
+
+    try:
+        results = _with_retry(lambda: tavily_client.search(query=query, num_results=3))
+    except TRANSIENT_ERRORS as exc:
+        return (
+            f"SEARCH FAILED — the connection to the search API dropped after 3 attempts "
+            f"({type(exc).__name__}). This is usually transient. Try one more search; if it "
+            f"fails again, report that web search is unavailable and do not invent results."
+        )
+    except Exception as exc:
+        return (
+            f"SEARCH FAILED — {type(exc).__name__}: {exc}. "
+            f"Do not invent results; report that the search could not be completed."
+        )
+
+    for r in results.get('results', []):
         out.append(f"Title: {r['title']}\nURL: {r['url']}\nSnippet: {r['content'][:300]}\n")
-    
+
+    if not out:
+        return "SEARCH RETURNED NO RESULTS. Try a different, broader query."
+
     return "\n----\n".join(out)
 
 
@@ -48,7 +108,8 @@ def scrape_url(url: str) -> str:
 
     try:
         # ── Fetch page ─────────────────────────────────────
-        response = requests.get(
+        # Session retries dropped connections and 429/5xx before giving up.
+        response = _session().get(
             url,
             headers=headers,
             timeout=15
@@ -123,6 +184,9 @@ def scrape_url(url: str) -> str:
 
     except requests.exceptions.Timeout:
         return "Request timed out while scraping the URL."
+
+    except requests.exceptions.ConnectionError as e:
+        return f"Connection dropped while scraping the URL (retried 3 times): {str(e)}"
 
     except requests.exceptions.HTTPError as e:
         return f"HTTP error occurred: {str(e)}"
